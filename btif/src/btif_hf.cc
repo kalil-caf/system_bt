@@ -37,13 +37,13 @@
 #include <hardware/bluetooth_headset_interface.h>
 #include <hardware/bt_hf.h>
 
-#include "bta/include/bta_ag_api.h"
 #include "bta/include/utl.h"
 #include "bta_ag_api.h"
 #include "btif_common.h"
 #include "btif_hf.h"
 #include "btif_profile_queue.h"
 #include "btif_util.h"
+#include "osi/include/metrics.h"
 
 namespace bluetooth {
 namespace headset {
@@ -247,6 +247,10 @@ static void send_indicator_update(const btif_hf_cb_t& control_block,
   BTA_AgResult(control_block.handle, BTA_AG_IND_RES, ag_res);
 }
 
+static bool is_nth_bit_enabled(uint32_t value, int n) {
+  return (value & (static_cast<uint32_t>(1) << n)) != 0;
+}
+
 void clear_phone_state_multihf(int idx) {
   btif_hf_cb[idx].call_setup_state = BTHF_CALL_STATE_IDLE;
   btif_hf_cb[idx].num_active = 0;
@@ -316,17 +320,19 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
         btif_hf_cb[idx].state = BTHF_CONNECTION_STATE_CONNECTED;
         btif_hf_cb[idx].peer_feat = 0;
         clear_phone_state_multihf(idx);
+        system_bt_osi::BluetoothMetricsLogger::GetInstance()
+            ->LogHeadsetProfileRfcConnection(p_data->open.service_id);
       } else if (btif_hf_cb[idx].state == BTHF_CONNECTION_STATE_CONNECTING) {
         LOG(ERROR) << __func__ << ": AG open failed for "
                    << btif_hf_cb[idx].connected_bda << ", status "
                    << unsigned(p_data->open.status);
         btif_hf_cb[idx].state = BTHF_CONNECTION_STATE_DISCONNECTED;
       } else {
-        BTIF_TRACE_WARNING(
-            "%s: AG open failed, but another device connected. status=%d "
-            "state=%d connected device=%s",
-            __func__, p_data->open.status, btif_hf_cb[idx].state,
-            btif_hf_cb[idx].connected_bda.ToString().c_str());
+        LOG(WARNING) << __func__ << ": AG open failed for "
+                     << p_data->open.bd_addr << ", error "
+                     << std::to_string(p_data->open.status)
+                     << ", local device is " << btif_hf_cb[idx].connected_bda
+                     << ". Ignoring as not expecting to open";
         break;
       }
       bt_hf_callbacks->ConnectionStateCallback(btif_hf_cb[idx].state,
@@ -517,6 +523,16 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
                                         &btif_hf_cb[idx].connected_bda);
       }
       break;
+    case BTA_AG_AT_BIA_EVT:
+      if (p_data->val.hdr.status == BTA_AG_SUCCESS) {
+        uint32_t bia_mask_out = p_data->val.num;
+        bool service = !is_nth_bit_enabled(bia_mask_out, BTA_AG_IND_SERVICE);
+        bool roam = !is_nth_bit_enabled(bia_mask_out, BTA_AG_IND_ROAM);
+        bool signal = !is_nth_bit_enabled(bia_mask_out, BTA_AG_IND_SIGNAL);
+        bool battery = !is_nth_bit_enabled(bia_mask_out, BTA_AG_IND_BATTCHG);
+        bt_hf_callbacks->AtBiaCallback(service, roam, signal, battery,
+                                       &btif_hf_cb[idx].connected_bda);
+      }
     default:
       BTIF_TRACE_WARNING("%s: Unhandled event: %d", __func__, event);
       break;
