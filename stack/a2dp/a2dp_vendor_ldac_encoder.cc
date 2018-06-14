@@ -359,6 +359,7 @@ static void a2dp_vendor_ldac_encoder_update(uint16_t peer_mtu,
     }
     a2dp_ldac_encoder_cb.has_ldac_handle = true;
   }
+  CHECK(a2dp_ldac_encoder_cb.ldac_handle != nullptr);
 
   if (!a2dp_codec_config->copyOutOtaCodecConfig(codec_info)) {
     LOG_ERROR(LOG_TAG,
@@ -494,8 +495,13 @@ static void a2dp_vendor_ldac_encoder_update(uint16_t peer_mtu,
       p_encoder_params->channel_mode, p_encoder_params->pcm_fmt,
       p_encoder_params->sample_rate);
   if (result != 0) {
-    LOG_ERROR(LOG_TAG, "%s: error initializing the LDAC encoder: %d", __func__,
-              result);
+    int err_code = ldac_get_error_code_func(a2dp_ldac_encoder_cb.ldac_handle);
+    LOG_ERROR(LOG_TAG,
+              "%s: error initializing the LDAC encoder: %d api_error = %d "
+              "handle_error = %d block_error = %d error_code = 0x%x",
+              __func__, result, LDACBT_API_ERR(err_code),
+              LDACBT_HANDLE_ERR(err_code), LDACBT_BLOCK_ERR(err_code),
+              err_code);
   }
 }
 
@@ -659,9 +665,10 @@ static void a2dp_ldac_encode_frames(uint8_t nb_frame) {
               ldac_get_error_code_func(a2dp_ldac_encoder_cb.ldac_handle);
           LOG_ERROR(LOG_TAG,
                     "%s: LDAC encoding error: %d api_error = %d "
-                    "handle_error = %d block_error = %d",
+                    "handle_error = %d block_error = %d error_code = 0x%x",
                     __func__, result, LDACBT_API_ERR(err_code),
-                    LDACBT_HANDLE_ERR(err_code), LDACBT_BLOCK_ERR(err_code));
+                    LDACBT_HANDLE_ERR(err_code), LDACBT_BLOCK_ERR(err_code),
+                    err_code);
           a2dp_ldac_encoder_cb.stats.media_read_total_dropped_packets++;
           osi_free(p_buf);
           return;
@@ -754,6 +761,10 @@ void a2dp_vendor_ldac_set_transmit_queue_length(size_t transmit_queue_length) {
 
 period_ms_t A2dpCodecConfigLdac::encoderIntervalMs() const {
   return a2dp_vendor_ldac_get_encoder_interval_ms();
+}
+
+int A2dpCodecConfigLdac::getEffectiveMtu() const {
+  return a2dp_ldac_encoder_cb.TxAaMtuSize;
 }
 
 void A2dpCodecConfigLdac::debug_codec_dump(int fd) {

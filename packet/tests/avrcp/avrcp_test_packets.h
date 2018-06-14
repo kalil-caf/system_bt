@@ -25,6 +25,14 @@ namespace {
 std::vector<uint8_t> get_capabilities_request = {
     0x01, 0x48, 0x00, 0x00, 0x19, 0x58, 0x10, 0x00, 0x00, 0x01, 0x03};
 
+// AVRCP Get Capabilities Request packet with Company ID
+std::vector<uint8_t> get_capabilities_request_company_id = {
+    0x01, 0x48, 0x00, 0x00, 0x19, 0x58, 0x10, 0x00, 0x00, 0x01, 0x02};
+
+// AVRCP Get Capabilities Request packet with Unknown
+std::vector<uint8_t> get_capabilities_request_unknown = {
+    0x01, 0x48, 0x00, 0x00, 0x19, 0x58, 0x10, 0x00, 0x00, 0x01, 0x7f};
+
 // AVRCP Get Capabilities Response to Company ID request
 std::vector<uint8_t> get_capabilities_response_company_id = {
     0x0c, 0x48, 0x00, 0x00, 0x19, 0x58, 0x10, 0x00, 0x00,
@@ -146,6 +154,10 @@ std::vector<uint8_t> changed_volume_changed_notification = {
 std::vector<uint8_t> reject_player_app_settings_response = {
     0x0a, 0x48, 0x00, 0x00, 0x19, 0x58, 0x11, 0x00, 0x00, 0x01, 0x00};
 
+// AVRCP Browse General Reject packet for invalid PDU ID
+std::vector<uint8_t> general_reject_invalid_command_packet = {0xa0, 0x00, 0x01,
+                                                              0x00};
+
 // AVRCP Browse Get Folder Items Request packet for media players with
 // the following data:
 //    scope = 0x00 (Media Player List)
@@ -263,6 +275,17 @@ std::vector<uint8_t> get_item_attributes_request_all_attributes = {
     0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00,
     0x00, 0x05, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x07};
 
+// AVRCP Get Item Attributes request with all attributes requested
+// with the following fields:
+//    scope = 0x03 (Now Playing List)
+//    uid_counter = 0x0001
+//    uid = 0x0000000000000001
+std::vector<uint8_t> get_item_attributes_request_all_attributes_invalid = {
+    0x73, 0x00, 0x28, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x01, 0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00,
+    0x00, 0x05, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x07};
+
 // AVRCP Get Item Attributes Response with the following attributes:
 //    title = "Test Song"
 //    artist = "Test Artist"
@@ -291,9 +314,17 @@ std::vector<uint8_t> set_browsed_player_response = {
     0x70, 0x00, 0x0a, 0x04, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x04, 0x00, 0x6a, 0x00};
 
+// AVRCP Get Total Number of Items Request with Scope = Media Player List
+std::vector<uint8_t> get_total_number_of_items_request_media_players = {
+    0x75, 0x00, 0x01, 0x00};
+
+// AVRCP Get Total Number of Items Request with Scope = VFS
+std::vector<uint8_t> get_total_number_of_items_request_vfs = {0x75, 0x00, 0x01,
+                                                              0x01};
+
 // AVRCP Get Total Number of Items Request with Scope = Now Playing List
-std::vector<uint8_t> get_total_number_of_items_request = {0x75, 0x00, 0x01,
-                                                          0x03};
+std::vector<uint8_t> get_total_number_of_items_request_now_playing = {
+    0x75, 0x00, 0x01, 0x03};
 
 // AVRCP Get Total number of Items Response with 5 items in folder
 std::vector<uint8_t> get_total_number_of_items_response = {

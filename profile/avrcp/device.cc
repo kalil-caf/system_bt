@@ -18,6 +18,7 @@
 
 #include "connection_handler.h"
 #include "device.h"
+#include "stack_config.h"
 
 namespace bluetooth {
 namespace avrcp {
@@ -34,7 +35,8 @@ Device::Device(
                         std::unique_ptr<::bluetooth::PacketBuilder> message)>
         send_msg_cb,
     uint16_t ctrl_mtu, uint16_t browse_mtu)
-    : address_(bdaddr),
+    : weak_ptr_factory_(this),
+      address_(bdaddr),
       avrcp13_compatibility_(avrcp13_compatibility),
       send_message_cb_(send_msg_cb),
       ctrl_mtu_(ctrl_mtu),
@@ -59,7 +61,11 @@ void Device::VendorPacketHandler(uint8_t label,
   CHECK(media_interface_);
   DEVICE_VLOG(3) << __func__ << ": pdu=" << pkt->GetCommandPdu();
 
-  // All CTypes at and above ACCEPTED are all response types.
+  // All CTypes at and above NOT_IMPLEMENTED are all response types.
+  if (pkt->GetCType() == CType::NOT_IMPLEMENTED) {
+    return;
+  }
+
   if (pkt->GetCType() >= CType::ACCEPTED) {
     switch (pkt->GetCommandPdu()) {
       // VOLUME_CHANGED is the only notification we register for while target.
@@ -90,30 +96,8 @@ void Device::VendorPacketHandler(uint8_t label,
 
   switch (pkt->GetCommandPdu()) {
     case CommandPdu::GET_CAPABILITIES: {
-      auto capability_request_pkt =
-          Packet::Specialize<GetCapabilitiesRequest>(pkt);
-      if (capability_request_pkt->GetCapabilityRequested() ==
-          Capability::COMPANY_ID) {
-        auto response =
-            GetCapabilitiesResponseBuilder::MakeCompanyIdBuilder(0x001958);
-        response->AddCompanyId(0x002345);
-        send_message_cb_.Run(label, false, std::move(response));
-      } else {
-        auto response =
-            GetCapabilitiesResponseBuilder::MakeEventsSupportedBuilder(
-                Event::PLAYBACK_STATUS_CHANGED);
-        response->AddEvent(Event::TRACK_CHANGED);
-        response->AddEvent(Event::PLAYBACK_POS_CHANGED);
-
-        if (!avrcp13_compatibility_) {
-          response->AddEvent(Event::AVAILABLE_PLAYERS_CHANGED);
-          response->AddEvent(Event::ADDRESSED_PLAYER_CHANGED);
-          response->AddEvent(Event::UIDS_CHANGED);
-          response->AddEvent(Event::NOW_PLAYING_CONTENT_CHANGED);
-        }
-
-        send_message(label, false, std::move(response));
-      }
+      HandleGetCapabilities(label,
+                            Packet::Specialize<GetCapabilitiesRequest>(pkt));
     } break;
 
     case CommandPdu::REGISTER_NOTIFICATION: {
@@ -123,13 +107,14 @@ void Device::VendorPacketHandler(uint8_t label,
 
     case CommandPdu::GET_ELEMENT_ATTRIBUTES: {
       media_interface_->GetSongInfo(base::Bind(
-          &Device::GetElementAttributesResponse, base::Unretained(this), label,
-          Packet::Specialize<GetElementAttributesRequest>(pkt)));
+          &Device::GetElementAttributesResponse, weak_ptr_factory_.GetWeakPtr(),
+          label, Packet::Specialize<GetElementAttributesRequest>(pkt)));
     } break;
 
     case CommandPdu::GET_PLAY_STATUS: {
-      media_interface_->GetPlayStatus(base::Bind(
-          &Device::GetPlayStatusResponse, base::Unretained(this), label));
+      media_interface_->GetPlayStatus(base::Bind(&Device::GetPlayStatusResponse,
+                                                 weak_ptr_factory_.GetWeakPtr(),
+                                                 label));
     } break;
 
     case CommandPdu::PLAY_ITEM: {
@@ -155,6 +140,46 @@ void Device::VendorPacketHandler(uint8_t label,
   }
 }
 
+void Device::HandleGetCapabilities(
+    uint8_t label, const std::shared_ptr<GetCapabilitiesRequest>& pkt) {
+  DEVICE_VLOG(4) << __func__
+                 << ": capability=" << pkt->GetCapabilityRequested();
+
+  switch (pkt->GetCapabilityRequested()) {
+    case Capability::COMPANY_ID: {
+      auto response =
+          GetCapabilitiesResponseBuilder::MakeCompanyIdBuilder(0x001958);
+      response->AddCompanyId(0x002345);
+      send_message_cb_.Run(label, false, std::move(response));
+    } break;
+
+    case Capability::EVENTS_SUPPORTED: {
+      auto response =
+          GetCapabilitiesResponseBuilder::MakeEventsSupportedBuilder(
+              Event::PLAYBACK_STATUS_CHANGED);
+      response->AddEvent(Event::TRACK_CHANGED);
+      response->AddEvent(Event::PLAYBACK_POS_CHANGED);
+
+      if (!avrcp13_compatibility_) {
+        response->AddEvent(Event::AVAILABLE_PLAYERS_CHANGED);
+        response->AddEvent(Event::ADDRESSED_PLAYER_CHANGED);
+        response->AddEvent(Event::UIDS_CHANGED);
+        response->AddEvent(Event::NOW_PLAYING_CONTENT_CHANGED);
+      }
+
+      send_message(label, false, std::move(response));
+    } break;
+
+    default: {
+      DEVICE_LOG(WARNING) << "Unhandled Capability: "
+                          << pkt->GetCapabilityRequested();
+      auto response = RejectBuilder::MakeBuilder(CommandPdu::GET_CAPABILITIES,
+                                                 Status::INVALID_PARAMETER);
+      send_message(label, false, std::move(response));
+    } break;
+  }
+}
+
 void Device::HandleNotification(
     uint8_t label, const std::shared_ptr<RegisterNotificationRequest>& pkt) {
   DEVICE_VLOG(4) << __func__ << ": event=" << pkt->GetEventRegistered();
@@ -164,14 +189,14 @@ void Device::HandleNotification(
       track_changed_ = Notification(true, label);
       media_interface_->GetNowPlayingList(
           base::Bind(&Device::TrackChangedNotificationResponse,
-                     base::Unretained(this), label, true));
+                     weak_ptr_factory_.GetWeakPtr(), label, true));
     } break;
 
     case Event::PLAYBACK_STATUS_CHANGED: {
       play_status_changed_ = Notification(true, label);
       media_interface_->GetPlayStatus(
           base::Bind(&Device::PlaybackStatusNotificationResponse,
-                     base::Unretained(this), label, true));
+                     weak_ptr_factory_.GetWeakPtr(), label, true));
     } break;
 
     case Event::PLAYBACK_POS_CHANGED: {
@@ -179,14 +204,14 @@ void Device::HandleNotification(
       play_pos_interval_ = pkt->GetInterval();
       media_interface_->GetPlayStatus(
           base::Bind(&Device::PlaybackPosNotificationResponse,
-                     base::Unretained(this), label, true));
+                     weak_ptr_factory_.GetWeakPtr(), label, true));
     } break;
 
     case Event::NOW_PLAYING_CONTENT_CHANGED: {
       now_playing_changed_ = Notification(true, label);
       media_interface_->GetNowPlayingList(base::Bind(
-          &Device::HandleNowPlayingNotificationResponse, base::Unretained(this),
-          now_playing_changed_.second, true));
+          &Device::HandleNowPlayingNotificationResponse,
+          weak_ptr_factory_.GetWeakPtr(), now_playing_changed_.second, true));
     } break;
 
     case Event::AVAILABLE_PLAYERS_CHANGED: {
@@ -202,7 +227,7 @@ void Device::HandleNotification(
       addr_player_changed_ = Notification(true, label);
       media_interface_->GetMediaPlayerList(
           base::Bind(&Device::AddressedPlayerNotificationResponse,
-                     base::Unretained(this), label, false));
+                     weak_ptr_factory_.GetWeakPtr(), label, true));
     } break;
 
     case Event::UIDS_CHANGED: {
@@ -217,7 +242,7 @@ void Device::HandleNotification(
       DEVICE_LOG(ERROR) << __func__ << " : Unknown event registered. Event ID="
                         << pkt->GetEventRegistered();
       auto response = RejectBuilder::MakeBuilder(
-          (CommandPdu)pkt->GetCommandPdu(), Status::INVALID_COMMAND);
+          (CommandPdu)pkt->GetCommandPdu(), Status::INVALID_PARAMETER);
       send_message(label, false, std::move(response));
     } break;
   }
@@ -275,10 +300,17 @@ void Device::HandleVolumeChanged(
   if (volume_ == VOL_NOT_SUPPORTED) {
     volume_ = pkt->GetVolume();
     volume_interface_->DeviceConnected(
-        GetAddress(), base::Bind(&Device::SetVolume, base::Unretained(this)));
+        GetAddress(),
+        base::Bind(&Device::SetVolume, weak_ptr_factory_.GetWeakPtr()));
 
     // Ignore the returned volume in favor of the volume returned
     // by the volume interface.
+    return;
+  }
+
+  if (!IsActive()) {
+    DEVICE_VLOG(3) << __func__
+                   << ": Ignoring volume changes from non active device";
     return;
   }
 
@@ -325,6 +357,15 @@ void Device::TrackChangedNotificationResponse(uint8_t label, bool interim,
       DEVICE_VLOG(3) << __func__ << ": Found media ID match for "
                      << song.media_id;
       uid = now_playing_ids_.get_uid(curr_song_id);
+    }
+  }
+
+  if (curr_song_id == "") {
+    DEVICE_LOG(WARNING) << "Empty media ID";
+    uid = 0;
+    if (stack_config_get_interface()->get_pts_avrcp_test()) {
+      DEVICE_LOG(WARNING) << __func__ << ": pts test mode";
+      uid = 0xffffffffffffffff;
     }
   }
 
@@ -401,8 +442,8 @@ void Device::PlaybackPosNotificationResponse(uint8_t label, bool interim,
   // the status bar on the remote device move.
   if (status.state == PlayState::PLAYING) {
     DEVICE_VLOG(0) << __func__ << ": Queue next play position update";
-    play_pos_update_cb_.Reset(
-        base::Bind(&Device::HandlePlayPosUpdate, base::Unretained(this)));
+    play_pos_update_cb_.Reset(base::Bind(&Device::HandlePlayPosUpdate,
+                                         weak_ptr_factory_.GetWeakPtr()));
     base::MessageLoop::current()->task_runner()->PostDelayedTask(
         FROM_HERE, play_pos_update_cb_.callback(),
         base::TimeDelta::FromSeconds(play_pos_interval_));
@@ -424,12 +465,28 @@ void Device::AddressedPlayerNotificationResponse(
 
   auto response =
       RegisterNotificationResponseBuilder::MakeAddressedPlayerBuilder(
-          true, curr_player, 0x0000);
+          interim, curr_player, 0x0000);
   send_message_cb_.Run(label, false, std::move(response));
 
   if (!interim) {
     active_labels_.erase(label);
     addr_player_changed_ = Notification(false, 0);
+    RejectNotification();
+  }
+}
+
+void Device::RejectNotification() {
+  DEVICE_VLOG(1) << __func__;
+  Notification* rejectNotification[] = {&play_status_changed_, &track_changed_,
+                                        &play_pos_changed_,
+                                        &now_playing_changed_};
+  for (int i = 0; i < 4; i++) {
+    uint8_t label = rejectNotification[i]->second;
+    auto response = RejectBuilder::MakeBuilder(
+        CommandPdu::REGISTER_NOTIFICATION, Status::ADDRESSED_PLAYER_CHANGED);
+    send_message_cb_.Run(label, false, std::move(response));
+    active_labels_.erase(label);
+    rejectNotification[i] = new Notification(false, 0);
   }
 }
 
@@ -485,19 +542,20 @@ void Device::MessageReceived(uint8_t label, std::shared_ptr<Packet> pkt) {
     case Opcode::PASS_THROUGH: {
       auto pass_through_packet = Packet::Specialize<PassThroughPacket>(pkt);
       auto response = PassThroughPacketBuilder::MakeBuilder(
-          true, pass_through_packet->GetPushed(),
+          true, pass_through_packet->GetKeyState() == KeyState::PUSHED,
           pass_through_packet->GetOperationId());
       send_message(label, false, std::move(response));
 
-      // TODO (apanicke): Use an enum for media key ID's also handle
-      // other keys like forward and back for device switching.
+      // TODO (apanicke): Use an enum for media key ID's
       if (pass_through_packet->GetOperationId() == 0x44 &&
-          !pass_through_packet->GetPushed()) {
+          pass_through_packet->GetKeyState() == KeyState::PUSHED) {
         // We need to get the play status since we need to know
         // what the actual playstate is without being modified
         // by whether the device is active.
         media_interface_->GetPlayStatus(base::Bind(
-            [](Device* d, PlayStatus s) {
+            [](base::WeakPtr<Device> d, PlayStatus s) {
+              if (!d) return;
+
               if (!d->IsActive()) {
                 LOG(INFO) << "Setting " << d->address_.ToString()
                           << " to be the active device";
@@ -510,14 +568,16 @@ void Device::MessageReceived(uint8_t label, std::shared_ptr<Packet> pkt) {
                 }
               }
 
-              d->media_interface_->SendKeyEvent(0x44, 0);
+              d->media_interface_->SendKeyEvent(0x44, KeyState::PUSHED);
             },
-            base::Unretained(this)));
+            weak_ptr_factory_.GetWeakPtr()));
         return;
       }
 
-      media_interface_->SendKeyEvent(pass_through_packet->GetOperationId(),
-                                     pass_through_packet->GetPushed() ? 0 : 1);
+      if (IsActive()) {
+        media_interface_->SendKeyEvent(pass_through_packet->GetOperationId(),
+                                       pass_through_packet->GetKeyState());
+      }
     } break;
     case Opcode::VENDOR: {
       auto vendor_pkt = Packet::Specialize<VendorPacket>(pkt);
@@ -578,8 +638,16 @@ void Device::BrowseMessageReceived(uint8_t label,
       HandleGetItemAttributes(
           label, Packet::Specialize<GetItemAttributesRequest>(pkt));
       break;
+    case BrowsePdu::GET_TOTAL_NUMBER_OF_ITEMS:
+      HandleGetTotalNumberOfItems(
+          label, Packet::Specialize<GetTotalNumberOfItemsRequest>(pkt));
+      break;
     default:
       DEVICE_LOG(WARNING) << __func__ << ": " << pkt->GetPdu();
+      auto response = GeneralRejectBuilder::MakeBuilder(
+          BrowsePdu::GENERAL_REJECT, Status::INVALID_COMMAND);
+      send_message(label, true, std::move(response));
+
       break;
   }
 }
@@ -592,23 +660,78 @@ void Device::HandleGetFolderItems(uint8_t label,
     case Scope::MEDIA_PLAYER_LIST:
       media_interface_->GetMediaPlayerList(
           base::Bind(&Device::GetMediaPlayerListResponse,
-                     base::Unretained(this), label, pkt));
+                     weak_ptr_factory_.GetWeakPtr(), label, pkt));
       break;
     case Scope::VFS:
       media_interface_->GetFolderItems(
           curr_browsed_player_id_, CurrentFolder(),
-          base::Bind(&Device::GetVFSListResponse, base::Unretained(this), label,
-                     pkt));
+          base::Bind(&Device::GetVFSListResponse,
+                     weak_ptr_factory_.GetWeakPtr(), label, pkt));
       break;
     case Scope::NOW_PLAYING:
       media_interface_->GetNowPlayingList(
-          base::Bind(&Device::GetNowPlayingListResponse, base::Unretained(this),
-                     label, pkt));
+          base::Bind(&Device::GetNowPlayingListResponse,
+                     weak_ptr_factory_.GetWeakPtr(), label, pkt));
       break;
     default:
       DEVICE_LOG(ERROR) << __func__ << ": " << pkt->GetScope();
       break;
   }
+}
+
+void Device::HandleGetTotalNumberOfItems(
+    uint8_t label, std::shared_ptr<GetTotalNumberOfItemsRequest> pkt) {
+  DEVICE_VLOG(2) << __func__ << ": scope=" << pkt->GetScope();
+
+  switch (pkt->GetScope()) {
+    case Scope::MEDIA_PLAYER_LIST: {
+      media_interface_->GetMediaPlayerList(
+          base::Bind(&Device::GetTotalNumberOfItemsMediaPlayersResponse,
+                     weak_ptr_factory_.GetWeakPtr(), label));
+      break;
+    }
+    case Scope::VFS:
+      media_interface_->GetFolderItems(
+          curr_browsed_player_id_, CurrentFolder(),
+          base::Bind(&Device::GetTotalNumberOfItemsVFSResponse,
+                     weak_ptr_factory_.GetWeakPtr(), label));
+      break;
+    case Scope::NOW_PLAYING:
+      media_interface_->GetNowPlayingList(
+          base::Bind(&Device::GetTotalNumberOfItemsNowPlayingResponse,
+                     weak_ptr_factory_.GetWeakPtr(), label));
+      break;
+    default:
+      DEVICE_LOG(ERROR) << __func__ << ": " << pkt->GetScope();
+      break;
+  }
+}
+
+void Device::GetTotalNumberOfItemsMediaPlayersResponse(
+    uint8_t label, uint16_t curr_player, std::vector<MediaPlayerInfo> list) {
+  DEVICE_VLOG(2) << __func__ << ": num_items=" << list.size();
+
+  auto builder = GetTotalNumberOfItemsResponseBuilder::MakeBuilder(
+      Status::NO_ERROR, 0x0000, list.size());
+  send_message(label, true, std::move(builder));
+}
+
+void Device::GetTotalNumberOfItemsVFSResponse(uint8_t label,
+                                              std::vector<ListItem> list) {
+  DEVICE_VLOG(2) << __func__ << ": num_items=" << list.size();
+
+  auto builder = GetTotalNumberOfItemsResponseBuilder::MakeBuilder(
+      Status::NO_ERROR, 0x0000, list.size());
+  send_message(label, true, std::move(builder));
+}
+
+void Device::GetTotalNumberOfItemsNowPlayingResponse(
+    uint8_t label, std::string curr_song_id, std::vector<SongInfo> list) {
+  DEVICE_VLOG(2) << __func__ << ": num_items=" << list.size();
+
+  auto builder = GetTotalNumberOfItemsResponseBuilder::MakeBuilder(
+      Status::NO_ERROR, 0x0000, list.size());
+  send_message(label, true, std::move(builder));
 }
 
 void Device::HandleChangePath(uint8_t label,
@@ -647,8 +770,8 @@ void Device::HandleChangePath(uint8_t label,
 
   media_interface_->GetFolderItems(
       curr_browsed_player_id_, CurrentFolder(),
-      base::Bind(&Device::ChangePathResponse, base::Unretained(this), label,
-                 pkt));
+      base::Bind(&Device::ChangePathResponse, weak_ptr_factory_.GetWeakPtr(),
+                 label, pkt));
 }
 
 void Device::ChangePathResponse(uint8_t label,
@@ -664,12 +787,20 @@ void Device::ChangePathResponse(uint8_t label,
 void Device::HandleGetItemAttributes(
     uint8_t label, std::shared_ptr<GetItemAttributesRequest> pkt) {
   DEVICE_VLOG(2) << __func__ << ": scope=" << pkt->GetScope()
-                 << " uid=" << loghex(pkt->GetUid());
+                 << " uid=" << loghex(pkt->GetUid())
+                 << " uid counter=" << loghex(pkt->GetUidCounter());
+  if (pkt->GetUidCounter() != 0x0000) {  // For database unaware player, use 0
+    DEVICE_LOG(WARNING) << "UidCounter is invalid";
+    auto builder = GetItemAttributesResponseBuilder::MakeBuilder(
+        Status::UIDS_CHANGED, browse_mtu_);
+    send_message(label, true, std::move(builder));
+    return;
+  }
   switch (pkt->GetScope()) {
     case Scope::NOW_PLAYING: {
       media_interface_->GetNowPlayingList(
           base::Bind(&Device::GetItemAttributesNowPlayingResponse,
-                     base::Unretained(this), label, pkt));
+                     weak_ptr_factory_.GetWeakPtr(), label, pkt));
     } break;
     case Scope::VFS:
       // TODO (apanicke): Check the vfs_ids_ here. If the item doesn't exist
@@ -679,7 +810,7 @@ void Device::HandleGetItemAttributes(
       media_interface_->GetFolderItems(
           curr_browsed_player_id_, CurrentFolder(),
           base::Bind(&Device::GetItemAttributesVFSResponse,
-                     base::Unretained(this), label, pkt));
+                     weak_ptr_factory_.GetWeakPtr(), label, pkt));
       break;
     default:
       DEVICE_LOG(ERROR) << "UNKNOWN SCOPE FOR HANDLE GET ITEM ATTRIBUTES";
@@ -927,8 +1058,9 @@ void Device::HandleSetBrowsedPlayer(
     uint8_t label, std::shared_ptr<SetBrowsedPlayerRequest> pkt) {
   DEVICE_VLOG(2) << __func__ << ": player_id=" << pkt->GetPlayerId();
   media_interface_->SetBrowsedPlayer(
-      pkt->GetPlayerId(), base::Bind(&Device::SetBrowsedPlayerResponse,
-                                     base::Unretained(this), label, pkt));
+      pkt->GetPlayerId(),
+      base::Bind(&Device::SetBrowsedPlayerResponse,
+                 weak_ptr_factory_.GetWeakPtr(), label, pkt));
 }
 
 void Device::SetBrowsedPlayerResponse(
@@ -937,8 +1069,13 @@ void Device::SetBrowsedPlayerResponse(
   DEVICE_VLOG(2) << __func__ << ": success=" << success << " root_id=\""
                  << root_id << "\" num_items=" << num_items;
 
-  // TODO (apanicke): Check success. Right now this is ok since it will
-  // always succeed since we only have one player in the media layer.
+  if (!success) {
+    auto response = SetBrowsedPlayerResponseBuilder::MakeBuilder(
+        Status::INVALID_PLAYER_ID, 0x0000, num_items, 0, "");
+    send_message(label, true, std::move(response));
+    return;
+  }
+
   curr_browsed_player_id_ = pkt->GetPlayerId();
 
   // Clear the path and push the new root.
@@ -973,16 +1110,12 @@ void Device::SendFolderUpdate(bool available_players, bool addressed_player,
   DEVICE_VLOG(4) << __func__;
 
   if (available_players) {
-    // TODO (apanicke): Right now this isn't needed since we only show one
-    // player. Implement this in the future for a more complete
-    // implementation though.
+    HandleAvailablePlayerUpdate();
   }
 
   if (addressed_player) {
-    // TODO (apanicke): See above TODO.
+    HandleAddressedPlayerUpdate();
   }
-
-  CHECK(false) << "NEED TO IMPLEMENT";
 }
 
 void Device::HandleTrackUpdate() {
@@ -994,7 +1127,7 @@ void Device::HandleTrackUpdate() {
 
   media_interface_->GetNowPlayingList(
       base::Bind(&Device::TrackChangedNotificationResponse,
-                 base::Unretained(this), track_changed_.second, false));
+                 weak_ptr_factory_.GetWeakPtr(), track_changed_.second, false));
 }
 
 void Device::HandlePlayStatusUpdate() {
@@ -1004,9 +1137,9 @@ void Device::HandlePlayStatusUpdate() {
     return;
   }
 
-  media_interface_->GetPlayStatus(
-      base::Bind(&Device::PlaybackStatusNotificationResponse,
-                 base::Unretained(this), play_status_changed_.second, false));
+  media_interface_->GetPlayStatus(base::Bind(
+      &Device::PlaybackStatusNotificationResponse,
+      weak_ptr_factory_.GetWeakPtr(), play_status_changed_.second, false));
 }
 
 void Device::HandleNowPlayingUpdate() {
@@ -1017,9 +1150,9 @@ void Device::HandleNowPlayingUpdate() {
     return;
   }
 
-  media_interface_->GetNowPlayingList(
-      base::Bind(&Device::HandleNowPlayingNotificationResponse,
-                 base::Unretained(this), now_playing_changed_.second, false));
+  media_interface_->GetNowPlayingList(base::Bind(
+      &Device::HandleNowPlayingNotificationResponse,
+      weak_ptr_factory_.GetWeakPtr(), now_playing_changed_.second, false));
 }
 
 void Device::HandleNowPlayingNotificationResponse(
@@ -1052,9 +1185,40 @@ void Device::HandlePlayPosUpdate() {
     return;
   }
 
-  media_interface_->GetPlayStatus(
-      base::Bind(&Device::PlaybackPosNotificationResponse,
-                 base::Unretained(this), play_pos_changed_.second, false));
+  media_interface_->GetPlayStatus(base::Bind(
+      &Device::PlaybackPosNotificationResponse, weak_ptr_factory_.GetWeakPtr(),
+      play_pos_changed_.second, false));
+}
+
+void Device::HandleAvailablePlayerUpdate() {
+  DEVICE_VLOG(1) << __func__;
+
+  if (!avail_players_changed_.first) {
+    LOG(WARNING) << "Device is not registered for available player updates";
+    return;
+  }
+
+  auto response =
+      RegisterNotificationResponseBuilder::MakeAvailablePlayersBuilder(false);
+  send_message_cb_.Run(avail_players_changed_.second, false,
+                       std::move(response));
+
+  if (!avail_players_changed_.first) {
+    active_labels_.erase(avail_players_changed_.second);
+    avail_players_changed_ = Notification(false, 0);
+  }
+}
+
+void Device::HandleAddressedPlayerUpdate() {
+  DEVICE_VLOG(1) << __func__;
+  if (!addr_player_changed_.first) {
+    DEVICE_LOG(WARNING)
+        << "Device is not registered for addressed player updates";
+    return;
+  }
+  media_interface_->GetMediaPlayerList(base::Bind(
+      &Device::AddressedPlayerNotificationResponse,
+      weak_ptr_factory_.GetWeakPtr(), addr_player_changed_.second, false));
 }
 
 void Device::DeviceDisconnected() {
@@ -1075,29 +1239,42 @@ static std::string volumeToStr(int8_t volume) {
 }
 
 std::ostream& operator<<(std::ostream& out, const Device& d) {
-  out << "Avrcp Device: Address=" << d.address_.ToString() << std::endl;
-  out << "  └ isActive: " << (d.IsActive() ? "YES" : "NO") << std::endl;
-  out << "  └ Current Browsed Player: " << d.curr_browsed_player_id_
-      << std::endl;
-  out << "  └ Registered Notifications: " << std::endl;
-  out << "    └ Track: " << d.track_changed_.first << std::endl;
-  out << "    └ Play Status: " << d.play_status_changed_.first << std::endl;
-  out << "    └ Play Position: " << d.play_pos_changed_.first << std::endl;
-  out << "    └ Now Playing: " << d.now_playing_changed_.first << std::endl;
-  out << "    └ Addressed Player: " << d.addr_player_changed_.first
-      << std::endl;
-  out << "    └ Available Players: " << d.avail_players_changed_.first
-      << std::endl;
-  out << "    └ UIDs Changed: " << d.uids_changed_.first << std::endl;
-  out << "  └ Last Song Sent ID: " << d.last_song_info_.media_id << std::endl;
-  out << "  └ Last Play State: " << d.last_play_status_.state << std::endl;
-  out << "  └ Current Volume: " << volumeToStr(d.volume_) << std::endl;
-  out << "  └ Current Folder: " << d.CurrentFolder();
-  out << "  └ Control MTU Size: " << d.ctrl_mtu_ << std::endl;
-  out << "  └ Browse MTU Size: " << d.browse_mtu_ << std::endl;
-  out << "  └ Features Supported: TO BE IMPLEMENTED" << std::endl;
-  out << "  └ Last X Media Key Events: TO BE IMPLEMENTED" << std::endl;
+  out << "  " << d.address_.ToString();
+  if (d.IsActive()) out << " <Active>";
   out << std::endl;
+  out << "    Current Volume: " << volumeToStr(d.volume_) << std::endl;
+  out << "    Current Browsed Player ID: " << d.curr_browsed_player_id_
+      << std::endl;
+  out << "    Registered Notifications: " << std::endl;
+  if (d.track_changed_.first) {
+    out << "      Track Changed" << std::endl;
+  }
+  if (d.play_status_changed_.first) {
+    out << "      Play Status" << std::endl;
+  }
+  if (d.play_pos_changed_.first) {
+    out << "      Play Position" << std::endl;
+  }
+  if (d.now_playing_changed_.first) {
+    out << "      Now Playing" << std::endl;
+  }
+  if (d.addr_player_changed_.first) {
+    out << "      Addressed Player" << std::endl;
+  }
+  if (d.avail_players_changed_.first) {
+    out << "      Available Players" << std::endl;
+  }
+  if (d.uids_changed_.first) {
+    out << "      UIDs Changed" << std::endl;
+  }
+
+  out << "    Last Play State: " << d.last_play_status_.state << std::endl;
+  out << "    Last Song Sent ID: \"" << d.last_song_info_.media_id << "\""
+      << std::endl;
+  out << "    Current Folder: \"" << d.CurrentFolder() << "\"" << std::endl;
+  out << "    MTU Sizes: CTRL=" << d.ctrl_mtu_ << " BROWSE=" << d.browse_mtu_
+      << std::endl;
+  // TODO (apanicke): Add supported features as well as media keys
   return out;
 }
 

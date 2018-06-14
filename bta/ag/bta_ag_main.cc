@@ -327,12 +327,14 @@ static tBTA_AG_SCB* bta_ag_scb_alloc(void) {
       /* initialize variables */
       p_scb->in_use = true;
       p_scb->sco_idx = BTM_INVALID_SCO_INDEX;
+      p_scb->received_at_bac = false;
       p_scb->codec_updated = false;
       p_scb->codec_fallback = false;
       p_scb->peer_codecs = BTA_AG_CODEC_CVSD;
       p_scb->sco_codec = BTA_AG_CODEC_CVSD;
       p_scb->peer_version = HFP_HSP_VERSION_UNKNOWN;
       p_scb->hsp_version = HSP_VERSION_1_2;
+      p_scb->peer_sdp_features = 0;
       /* set up timers */
       p_scb->ring_timer = alarm_new("bta_ag.scb_ring_timer");
       p_scb->collision_timer = alarm_new("bta_ag.scb_collision_timer");
@@ -563,7 +565,6 @@ void bta_ag_resume_open(tBTA_AG_SCB* p_scb) {
     LOG(INFO) << __func__ << ": Resume connection to " << p_scb->peer_addr
               << ", handle" << bta_ag_scb_to_idx(p_scb);
     tBTA_AG_DATA open_data = {.api_open.bd_addr = p_scb->peer_addr,
-                              .api_open.services = p_scb->open_services,
                               .api_open.sec_mask = p_scb->cli_sec_mask};
     bta_ag_sm_execute(p_scb, BTA_AG_API_OPEN_EVT, open_data);
   } else {

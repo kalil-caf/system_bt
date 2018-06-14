@@ -335,7 +335,7 @@ void gatt_process_exec_write_req(tGATT_TCB& tcb, uint8_t op_code, uint16_t len,
   } else /* nothing needs to be executed , send response now */
   {
     LOG(ERROR) << "gatt_process_exec_write_req: no prepare write pending";
-    gatt_send_error_rsp(tcb, GATT_ERROR, GATT_REQ_EXEC_WRITE, 0, false);
+    gatt_send_error_rsp(tcb, GATT_INVALID_OFFSET, GATT_REQ_EXEC_WRITE, 0, false);
   }
 }
 
@@ -575,7 +575,7 @@ static tGATT_STATUS read_handles(uint16_t& len, uint8_t*& p, uint16_t& s_hdl,
 
   if (s_hdl > e_hdl || !GATT_HANDLE_IS_VALID(s_hdl) ||
       !GATT_HANDLE_IS_VALID(e_hdl)) {
-    return GATT_INVALID_PDU;
+    return GATT_INVALID_HANDLE;
   }
 
   return GATT_SUCCESS;
